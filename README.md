@@ -1,4 +1,4 @@
-# Browser Automation & Tracing Demo
+# Browser Automation & GPU Tracing
 
 A demonstration project showcasing browser automation, tracing capabilities, and OS information gathering.
 
