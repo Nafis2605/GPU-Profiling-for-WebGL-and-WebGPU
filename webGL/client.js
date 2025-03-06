@@ -5,8 +5,6 @@ const os = require('os');
 const http = require('http');
 const url = require('url');
 const { exec } = require('child_process');
-// Import 'open' dynamically since it's an ES Module
-// We'll use this later when needed
 
 // Path to your WebGL HTML file
 const WEBGL_URL = 'http://192.168.1.252:9999/index-webgl.html';
@@ -52,7 +50,7 @@ function monitorGPU() {
       // macOS specific monitoring
       console.log("Starting macOS GPU monitoring...");
       const gpuCommand = 'sudo powermetrics --samplers gpu_power -i 1000 -n 15';
-      console.log(`Executing: ${gpuCommand}`);
+      //console.log(`Executing: ${gpuCommand}`);
       
       const gpuMonitor = exec(gpuCommand, {maxBuffer: 1024 * 1024 * 10}); // Increase buffer for large outputs
       let gpuData = '';
@@ -60,7 +58,7 @@ function monitorGPU() {
       gpuMonitor.stdout.on('data', (data) => {
         gpuData += data;
         // Print just a preview to avoid flooding the console
-        console.log(`GPU data sample: ${data.substring(0, 150)}...`);
+        //console.log(`GPU data sample: ${data.substring(0, 150)}...`);
       });
       
       gpuMonitor.stderr.on('data', (data) => {
@@ -346,8 +344,9 @@ async function profileWebGLPerformance() {
     fs.writeFileSync('webgl-profile-results.json', JSON.stringify(profileData, null, 2));
     console.log('Complete profile data saved to webgl-profile-results.json');
     
-    // Create HTML visualization
-    const htmlReport = generateHTMLReport(profileData);
+
+    // Create HTML visualization with GPU metrics
+    const htmlReport = generateHTMLReportWithGpuMetrics(profileData, 'gpu-metrics.txt');
     fs.writeFileSync('webgl-visualization.html', htmlReport);
     console.log('Visualization saved to webgl-visualization.html');
     
@@ -397,14 +396,106 @@ async function profileWebGLPerformance() {
   }
 }
 
-// Function to generate HTML report with visualization
-function generateHTMLReport(data) {
+// Function to parse GPU metrics data
+function parseGpuMetrics(data) {
+  const samples = [];
+  const lines = data.split('\n');
+  
+  let currentSample = {};
+  let sampleDate = '';
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    
+    // Look for sample timestamp
+    if (line.startsWith('*** Sampled system activity')) {
+      if (Object.keys(currentSample).length > 0) {
+        samples.push(currentSample);
+      }
+      
+      currentSample = {};
+      // Extract timestamp from line like "*** Sampled system activity (Thu Mar  6 12:36:47 2025 -0500) (1003.25ms elapsed) ***"
+      const timestampMatch = line.match(/\((.*?)\)/);
+      if (timestampMatch && timestampMatch[1]) {
+        sampleDate = timestampMatch[1];
+        currentSample.timestamp = sampleDate;
+        // Also extract a shorter timestamp for chart labels
+        const timeMatch = sampleDate.match(/(\d+:\d+:\d+)/);
+        if (timeMatch && timeMatch[1]) {
+          currentSample.timeLabel = timeMatch[1];
+        } else {
+          currentSample.timeLabel = `Sample ${samples.length + 1}`;
+        }
+      }
+    }
+    
+    // Look for GPU frequency
+    if (line.startsWith('GPU HW active frequency:')) {
+      const freqMatch = line.match(/GPU HW active frequency: (\d+) MHz/);
+      if (freqMatch && freqMatch[1]) {
+        currentSample.frequency = parseInt(freqMatch[1]);
+      }
+    }
+    
+    // Look for GPU active residency
+    if (line.startsWith('GPU HW active residency:')) {
+      const residencyMatch = line.match(/GPU HW active residency:\s+(\d+\.\d+)%/);
+      if (residencyMatch && residencyMatch[1]) {
+        currentSample.activeResidency = parseFloat(residencyMatch[1]);
+        currentSample.idleResidency = 100 - currentSample.activeResidency;
+      }
+    }
+    
+    // Look for GPU power
+    if (line.startsWith('GPU Power:')) {
+      const powerMatch = line.match(/GPU Power: (\d+) mW/);
+      if (powerMatch && powerMatch[1]) {
+        currentSample.power = parseInt(powerMatch[1]);
+      }
+    }
+  }
+  
+  // Add the last sample
+  if (Object.keys(currentSample).length > 0) {
+    samples.push(currentSample);
+  }
+  
+  return samples;
+}
+
+// Modified function to generate HTML report with both WebGL and GPU metrics
+function generateHTMLReportWithGpuMetrics(webglData, gpuMetricsFile) {
+  // Read GPU metrics data
+  const gpuMetricsData = fs.readFileSync(gpuMetricsFile, 'utf8');
+  
+  // Parse GPU metrics
+  const parsedGpuData = parseGpuMetrics(gpuMetricsData);
+  
+  // Extract data for charting
+  const gpuTimestamps = parsedGpuData.map(sample => sample.timeLabel || `Sample ${parsedGpuData.indexOf(sample) + 1}`);
+  const frequencies = parsedGpuData.map(sample => sample.frequency || 0);
+  const activeResidencies = parsedGpuData.map(sample => sample.activeResidency || 0);
+  const powers = parsedGpuData.map(sample => sample.power || 0);
+  
+  // Extract machine info from GPU metrics
+  let machineModel = 'Unknown';
+  let osVersion = 'Unknown';
+  const lines = gpuMetricsData.split('\n');
+  for (let i = 0; i < 10; i++) { // Check first few lines
+    if (lines[i] && lines[i].startsWith('Machine model:')) {
+      machineModel = lines[i].replace('Machine model:', '').trim();
+    }
+    if (lines[i] && lines[i].startsWith('OS version:')) {
+      osVersion = lines[i].replace('OS version:', '').trim();
+    }
+  }
+  
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>WebGL Performance Visualization</title>
+  <title>WebGL and GPU Performance Visualization</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@3.7.1/dist/chart.min.js"></script>
   <style>
     body {
@@ -421,7 +512,7 @@ function generateHTMLReport(data) {
       border-radius: 8px;
       box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     }
-    h1, h2 {
+    h1, h2, h3 {
       color: #333;
     }
     .chart-container {
@@ -457,80 +548,175 @@ function generateHTMLReport(data) {
       grid-template-columns: 1fr 1fr;
       gap: 20px;
     }
+    .section {
+      margin-top: 40px;
+      border-top: 1px solid #eee;
+      padding-top: 20px;
+    }
     @media (max-width: 768px) {
       .dashboard {
         grid-template-columns: 1fr;
       }
     }
+    .tabs {
+      display: flex;
+      margin-bottom: 20px;
+      border-bottom: 1px solid #ddd;
+    }
+    .tab {
+      padding: 10px 20px;
+      cursor: pointer;
+      border: 1px solid transparent;
+      border-bottom: none;
+      margin-right: 5px;
+    }
+    .tab.active {
+      background-color: #fff;
+      border-color: #ddd;
+      border-radius: 4px 4px 0 0;
+    }
+    .tab-content {
+      display: none;
+    }
+    .tab-content.active {
+      display: block;
+    }
   </style>
 </head>
 <body>
   <div class="container">
-    <h1>WebGL Performance Visualization</h1>
+    <h1>WebGL and GPU Performance Visualization</h1>
     <p>Data collected at ${new Date().toLocaleString()}</p>
     
-    <div class="info-box">
-      <h2>GPU Information</h2>
-      <div class="info-grid">
-        <div class="info-item">
-          <h3>Renderer</h3>
-          <p>${data.gpuInfo.renderer || 'Unknown'}</p>
-        </div>
-        <div class="info-item">
-          <h3>Vendor</h3>
-          <p>${data.gpuInfo.vendor || 'Unknown'}</p>
-        </div>
-        <div class="info-item">
-          <h3>WebGL Version</h3>
-          <p>${data.gpuInfo.version || 'Unknown'}</p>
-        </div>
-        <div class="info-item">
-          <h3>Shading Language Version</h3>
-          <p>${data.gpuInfo.shadingLanguageVersion || 'Unknown'}</p>
-        </div>
-        <div class="info-item">
-          <h3>Max Texture Size</h3>
-          <p>${data.gpuInfo.maxTextureSize || 'Unknown'}</p>
-        </div>
-        <div class="info-item">
-          <h3>Max Vertex Attribs</h3>
-          <p>${data.gpuInfo.maxVertexAttribs || 'Unknown'}</p>
+    <div class="tabs">
+      <div class="tab active" onclick="showTab('webgl-tab')">WebGL Performance</div>
+      <div class="tab" onclick="showTab('gpu-tab')">GPU Metrics</div>
+      <div class="tab" onclick="showTab('system-tab')">System Info</div>
+    </div>
+    
+    <div id="system-tab" class="tab-content">
+      <div class="info-box">
+        <h2>System Information</h2>
+        <div class="info-grid">
+          <div class="info-item">
+            <h3>Machine Model</h3>
+            <p>${machineModel}</p>
+          </div>
+          <div class="info-item">
+            <h3>OS Version</h3>
+            <p>${osVersion}</p>
+          </div>
+          <div class="info-item">
+            <h3>GPU Renderer</h3>
+            <p>${webglData.gpuInfo.renderer || 'Unknown'}</p>
+          </div>
+          <div class="info-item">
+            <h3>GPU Vendor</h3>
+            <p>${webglData.gpuInfo.vendor || 'Unknown'}</p>
+          </div>
+          <div class="info-item">
+            <h3>WebGL Version</h3>
+            <p>${webglData.gpuInfo.version || 'Unknown'}</p>
+          </div>
+          <div class="info-item">
+            <h3>Shading Language Version</h3>
+            <p>${webglData.gpuInfo.shadingLanguageVersion || 'Unknown'}</p>
+          </div>
         </div>
       </div>
     </div>
-
-    <h2>Performance Metrics Over Time</h2>
     
-    <div class="dashboard">
-      <div class="chart-container">
-        <canvas id="fpsChart"></canvas>
+    <div id="webgl-tab" class="tab-content active">
+      <h2>WebGL Performance Metrics</h2>
+      <div class="dashboard">
+        <div class="chart-container">
+          <canvas id="fpsChart"></canvas>
+        </div>
+        
+        <div class="chart-container">
+          <canvas id="memoryChart"></canvas>
+        </div>
+        
+        <div class="chart-container">
+          <canvas id="drawCallsChart"></canvas>
+        </div>
+        
+        <div class="chart-container">
+          <canvas id="triangleCountChart"></canvas>
+        </div>
       </div>
-      
-      <div class="chart-container">
-        <canvas id="memoryChart"></canvas>
-      </div>
-      
-      <div class="chart-container">
-        <canvas id="drawCallsChart"></canvas>
-      </div>
-      
-      <div class="chart-container">
-        <canvas id="triangleCountChart"></canvas>
+    </div>
+    
+    <div id="gpu-tab" class="tab-content">
+      <h2>GPU Hardware Metrics</h2>
+      <div class="dashboard">
+        <div class="chart-container">
+          <canvas id="gpuFrequencyChart"></canvas>
+        </div>
+        
+        <div class="chart-container">
+          <canvas id="gpuResidencyChart"></canvas>
+        </div>
+        
+        <div class="chart-container">
+          <canvas id="gpuPowerChart"></canvas>
+        </div>
+        
+        <div class="info-box">
+          <h3>GPU Metrics Summary</h3>
+          <ul>
+            <li><strong>Average Frequency:</strong> ${Math.round(frequencies.reduce((a, b) => a + b, 0) / frequencies.length)} MHz</li>
+            <li><strong>Average GPU Active Time:</strong> ${(activeResidencies.reduce((a, b) => a + b, 0) / activeResidencies.length).toFixed(2)}%</li>
+            <li><strong>Average Power Consumption:</strong> ${Math.round(powers.reduce((a, b) => a + b, 0) / powers.length)} mW</li>
+            <li><strong>Peak Power Usage:</strong> ${Math.max(...powers)} mW</li>
+            <li><strong>Peak Frequency:</strong> ${Math.max(...frequencies)} MHz</li>
+          </ul>
+        </div>
       </div>
     </div>
   </div>
 
   <script>
+    // Function to switch tabs
+    function showTab(tabId) {
+      // Hide all tab contents
+      document.querySelectorAll('.tab-content').forEach(content => {
+        content.classList.remove('active');
+      });
+      
+      // Remove active class from all tabs
+      document.querySelectorAll('.tab').forEach(tab => {
+        tab.classList.remove('active');
+      });
+      
+      // Show selected tab content
+      document.getElementById(tabId).classList.add('active');
+      
+      // Make clicked tab active
+      document.querySelectorAll('.tab').forEach(tab => {
+        if (tab.getAttribute('onclick').includes(tabId)) {
+          tab.classList.add('active');
+        }
+      });
+    }
+  
     // Parse the data
-    const data = ${JSON.stringify(data)};
+    const webglData = ${JSON.stringify(webglData)};
+    const gpuData = ${JSON.stringify(parsedGpuData)};
     
-    // Prepare data for charts
-    const timestamps = data.fpsOverTime.map((entry, index) => 'Sample ' + (index + 1));
-    const fpsData = data.fpsOverTime.map(entry => entry.fps);
-    const usedMemoryData = data.memoryOverTime.map(entry => entry.usedJSHeapSize);
-    const totalMemoryData = data.memoryOverTime.map(entry => entry.totalJSHeapSize);
-    const drawCallsData = data.gpuTasksOverTime.map(entry => entry.drawCalls);
-    const triangleCountData = data.gpuTasksOverTime.map(entry => entry.triangleCount);
+    // Prepare WebGL data for charts
+    const timestamps = webglData.fpsOverTime.map((entry, index) => 'Sample ' + (index + 1));
+    const fpsData = webglData.fpsOverTime.map(entry => entry.fps);
+    const usedMemoryData = webglData.memoryOverTime.map(entry => entry.usedJSHeapSize);
+    const totalMemoryData = webglData.memoryOverTime.map(entry => entry.totalJSHeapSize);
+    const drawCallsData = webglData.gpuTasksOverTime.map(entry => entry.drawCalls);
+    const triangleCountData = webglData.gpuTasksOverTime.map(entry => entry.triangleCount);
+    
+    // Prepare GPU metrics data for charts
+    const gpuTimestamps = ${JSON.stringify(gpuTimestamps)};
+    const frequencies = ${JSON.stringify(frequencies)};
+    const activeResidencies = ${JSON.stringify(activeResidencies)};
+    const powers = ${JSON.stringify(powers)};
     
     // Create FPS chart
     const fpsCtx = document.getElementById('fpsChart').getContext('2d');
@@ -687,10 +873,121 @@ function generateHTMLReport(data) {
         }
       }
     });
+    
+    // Create GPU Frequency chart
+    const gpuFreqCtx = document.getElementById('gpuFrequencyChart').getContext('2d');
+    new Chart(gpuFreqCtx, {
+      type: 'line',
+      data: {
+        labels: gpuTimestamps,
+        datasets: [{
+          label: 'GPU Frequency (MHz)',
+          data: frequencies,
+          backgroundColor: 'rgba(255, 99, 132, 0.2)',
+          borderColor: 'rgba(255, 99, 132, 1)',
+          borderWidth: 2,
+          tension: 0.3
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          title: {
+            display: true,
+            text: 'GPU Clock Frequency (MHz)'
+          }
+        },
+        scales: {
+          y: {
+            beginAtZero: false,
+            title: {
+              display: true,
+              text: 'Frequency (MHz)'
+            }
+          }
+        }
+      }
+    });
+    
+    // Create GPU Residency chart
+    const gpuResidencyCtx = document.getElementById('gpuResidencyChart').getContext('2d');
+    new Chart(gpuResidencyCtx, {
+      type: 'line',
+      data: {
+        labels: gpuTimestamps,
+        datasets: [{
+          label: 'GPU Active Time (%)',
+          data: activeResidencies,
+          backgroundColor: 'rgba(54, 162, 235, 0.2)',
+          borderColor: 'rgba(54, 162, 235, 1)',
+          borderWidth: 2,
+          tension: 0.3
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          title: {
+            display: true,
+            text: 'GPU Active Residency (%)'
+          }
+        },
+        scales: {
+          y: {
+            min: 0,
+            max: 100,
+            title: {
+              display: true,
+              text: 'Percentage (%)'
+            }
+          }
+        }
+      }
+    });
+    
+    // Create GPU Power chart
+    const gpuPowerCtx = document.getElementById('gpuPowerChart').getContext('2d');
+    new Chart(gpuPowerCtx, {
+      type: 'line',
+      data: {
+        labels: gpuTimestamps,
+        datasets: [{
+          label: 'GPU Power (mW)',
+          data: powers,
+          backgroundColor: 'rgba(75, 192, 192, 0.2)',
+          borderColor: 'rgba(75, 192, 192, 1)',
+          borderWidth: 2,
+          tension: 0.3
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          title: {
+            display: true,
+            text: 'GPU Power Consumption (mW)'
+          }
+        },
+        scales: {
+          y: {
+            beginAtZero: true,
+            title: {
+              display: true,
+              text: 'Power (mW)'
+            }
+          }
+        }
+      }
+    });
   </script>
 </body>
 </html>`;
 }
+
+
 
 // Function to run both GPU monitoring and WebGL profiling in parallel
 async function runProfilingWithGPUMonitoring() {
