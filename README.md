@@ -53,10 +53,6 @@ const WEBGL_URL = 'http://192.168.1.252:9999/index-webgl.html';
    node client.js
    ```
 
-## Known Issues
-
-The automation may occasionally get stuck during execution. This is a known issue that's currently being investigated. Despite this limitation, the code provides a functional example of the core concepts.
-
 ## Technical Details
 
 ### Server Component
@@ -72,10 +68,11 @@ The client uses browser automation to interact with the server's WebGL content. 
 - Execute scripts within the browser context
 - Collect tracing information
 - Gather OS-specific information
+- Automatically generate a dashboard to visualize the data collected 
 
 ## Contributing
 
-Contributions to fix the "getting stuck" issue or enhance the functionality are welcome. Please feel free to submit a pull request or open an issue to discuss potential improvements.
+Please feel free to submit a pull request or open an issue to discuss potential improvements.
 
 ## License
 
